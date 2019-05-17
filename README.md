@@ -1,1 +1,1 @@
-# MMS_Magnetopause_MixtureModel
+# Source files for 'Large‐Scale Statistical Survey of Magnetopause Reconnection'

@@ -1,0 +1,63 @@
+---
+title: "Comparison of differnet ML models on MMS data"
+output: pdf_document
+---
+```{r projectData_import}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message=FALSE, 
+                      fig.asp = 0.88, fig.width = 3, fig.keep='all',
+                      fig.align = "center", error = FALSE)
+library(dplyr)
+source("../source_files/GetDataFunctions.R")
+
+train = c(10, 13, 20, 31, 6, 29, 30, 35, 18, 1, 5)
+test = c(4, 17, 9)
+sample_orbits = c(train, test)
+
+data <- load_orbit("http://data.rmdp.xyz/mms/data/larger/merged/merged_201701-03.csv", "merged.Rds", sample_orbits[1])
+for(i in 2:length(sample_orbits)){
+  data <- rbind(data, load_orbit("http://data.rmdp.xyz/mms/data/larger/merged/merged_201701-03.csv", "merged.Rds", sample_orbits[i]))
+}
+data$Priority[is.na(data$Priority)] <- 0
+data$DIS.T <- (data$DIS.T_para + 2 * data$DIS.T_perp) / 3
+data$Clock.Angle <- atan2(data$FGM.By, data$FGM.Bz)
+data$Selected <- ifelse(data$Priority >= 100, 1, 0)
+data$SelectedF <- as.factor(data$Selected)
+
+class_error <- function(probs, tvalue) mean(probs != tvalue)
+subset.test <- data[data$Orbit %in% test, c("Selected", "SelectedF", "FGM.Bt", "DIS.T", "DIS.N", "Clock.Angle")]
+subset.train <- data[data$Orbit %in% train,c("Selected", "SelectedF", "FGM.Bt", "DIS.T", "DIS.N", "Clock.Angle")]
+data <- NULL
+```
+```{r projectData_boostingTrees}
+pnum = ncol(subset.train) - 2
+bag.fit <- randomForest::randomForest(SelectedF ~ . - Selected, data = subset.train, mtry = pnum, importance = TRUE)
+bag.pred <- predict(bag.fit, newdata = subset.test)
+errors.bag <- class_error(bag.pred, subset.test$SelectedF)
+
+rf.fit <- randomForest::randomForest(SelectedF ~ . - Selected, data = subset.train, mtry = sqrt(pnum), importance = TRUE)
+rf.pred <- predict(rf.fit, newdata = subset.test)
+errors.rf <- class_error(rf.pred, subset.test$SelectedF)
+
+boost.fit <- gbm::gbm(Selected ~ . - SelectedF, data = subset.train, distribution = "bernoulli", n.trees = 5000, interaction.depth = 4)
+boost.pred <- ifelse(predict(boost.fit, newdata = subset.test, n.trees = 5000) > 0.5, 1, 0)
+errors.boost <- class_error(boost.pred, subset.test$Selected)
+```
+```{r projectData_linearLog}
+lin.fit <- lm(Selected ~ . - SelectedF, data = subset.train)
+lin.pred <- ifelse(predict(lin.fit, newdata = subset.test) > 0.5, 1, 0)
+errors.lin <- class_error(lin.pred, subset.test$Selected)
+
+log.fit <- glm(Selected ~ . - SelectedF, data = subset.train, family = "binomial")
+log.pred <- ifelse(predict(log.fit, newdata = subset.test, type = "response") > 0.5, 1, 0)
+errors.log <- class_error(log.pred, subset.test$Selected)
+```
+```{r projectData_SVM}
+lsvm.fit <- e1071::svm(Selected ~ . - Selected, data = subset.train, kernel = "linear")
+lsvm.pred <- predict(lsvm.fit, subset.test)
+errors.lsvm <- class_error(lsvm.pred, subset.test$SelectedF)
+```
+```{r projectData_table}
+collate <- data.frame("Model.Type" = c("Linear Regression", "Logistic Regression", "Linear SVM", "Bagging", "Boosting", "Random Forests"), "Classification.Error" = c(errors.lin, errors.log, errors.lsvm, errors.psvm, errors.rsvm, errors.bag, errors.boost, errors.rf))
+
+knitr::kable(collate[order(collate$Classification.Error),], caption = "Classification Error for Multiple Models")
+```

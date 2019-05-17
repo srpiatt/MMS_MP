@@ -1,0 +1,208 @@
+---
+title: "Bayesian Mixture Model Testing"
+subtitle: "Using FGM.Bz, DIS.N, DIS.T & Clock Angle"
+output: pdf_document
+---
+```{r page_options, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message=FALSE, 
+                      fig.asp = 0.88, fig.width = 3, fig.keep='all',
+                      fig.align = "center", error = FALSE)
+library(ggplot2)
+library(rstan)
+
+#STAN settings
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+chains = 1
+iters = 100
+stan.control = list(max_treedepth = 20)
+
+source("../source_files/CommonPlots.R")
+source("../source_files/GetDataFunctions.R")
+source("../source_files/EvaluationFunctions.R")
+```
+```{r data_and_load_functions_multiple_orbits, results='hide'}
+sample_orbits <- sample(c(0:37), 6)
+print(sample_orbits)
+data.slice <- load_orbit("http://data.rmdp.xyz/mms/data/larger/merged/merged_201701-03.csv", "merged.Rds", sample_orbits[1])
+for(i in 2:length(sample_orbits)){
+  data.slice <- rbind(data.slice, load_orbit("http://data.rmdp.xyz/mms/data/larger/merged/merged_201701-03.csv", "merged.Rds", sample_orbits[i]))
+}
+```
+```{r compile_stan_model}
+fit.compiled <- stan_model("../stan/mp_testing.stan")
+```
+```{r generate_data_to_sample}
+# Prior distribution knowledge
+#           mu: MSH, MSP,        std: MSH, MSP,   theta
+Bt.mix = c(20, 60, 25, 10, 0.4852118)
+T.mix  = c(5.9420885,  8.0473952, 0.6658014, 0.3218401, 0.8245107)
+N.mix  = c(3.1198874, -0.2113956, 0.6748259, 0.5035918, 0.7746667)
+clock.mix = c(0, 0.05, -pi, pi)
+
+# Data from running merge_Mixtures.stan on test data: orbit 7.
+mixture_alpha	=	4.997109
+mixture_sigma	=	4.319474
+Bt_mix_sigma	=	0.03317478
+N_mix_sigma	=	0.01227035
+T_mix_sigma	=	0.01244464
+Clock_mix_sigma	=	0.02266183
+Bt_beta	=	-279.0574
+N_beta	=	29.35491
+T_beta	=	242.1864
+Clock_beta	=	0.7626921
+Clock_sigma	=	0.4208149
+
+# Process Data
+data.slice$Priority <- ifelse(data.slice$Priority < 100, 0, data.slice$Priority)
+data.slice$Priority[is.na(data.slice$Priority)] <- 0
+
+# Assign data to list format for consumption
+sample.data <- list(numsteps=nrow(data.slice),
+                    Bt_mix=Bt.mix, N_mix=N.mix, T_mix=T.mix, Clock_mix=clock.mix,
+                    Bt=data.slice$FGM.Bt, By=data.slice$FGM.By, Bz=data.slice$FGM.Bz,
+                    T_perp=data.slice$DIS.T_perp, T_para=data.slice$DIS.T_para, 
+                    N=data.slice$DIS.N, Priority=data.slice$Priority,
+                    mixture_alpha=mixture_alpha, mixture_sigma=mixture_sigma,
+                    Bt_mix_sigma=Bt_mix_sigma, N_mix_sigma=N_mix_sigma,
+                    T_mix_sigma=T_mix_sigma, Clock_mix_sigma=Clock_mix_sigma,
+                    Bt_beta=Bt_beta, N_beta=N_beta, T_beta=T_beta, 
+                    Clock_beta=Clock_beta, Clock_sigma=Clock_sigma)
+```
+```{r sample_from_model}
+fit.samples <- sampling(fit.compiled, sample.data, iter = iters,
+               chains=chains, control = stan.control)
+```
+```{r compile_plot_data}
+# Function to process samples for use in plots.
+plot_data <- function(data.slice, fit.data){
+  # --- Populate data from sampled parameters
+  get_data <- function(name, fun){
+    cols = colnames(as.matrix(fit.data))
+    if(paste(name, "[1]", sep="") %in% cols){ 
+      as.vector(apply(as.array(fit.data, par=c(name)), 3, fun))
+    } else NULL
+  }
+  
+  # Generate a smoothed region of TRUE/FALSE data
+  sum_window <- function(data, window, cutval){
+    t <- ifelse(data > cutval, TRUE, FALSE)
+    w <- round(window /2) 
+    l <- length(data)
+    r <- rep(0, l)
+    for(i in 1:l){
+      range <- max(0, i-w):min(l, i+w)
+      r[i] <- ifelse((sum(t[range]) / length(range)) > 0.5, TRUE, FALSE)
+    }
+    r
+  }
+  
+  # Build new plot data
+  r.data <- data.frame(Time = data.slice$Time, FGM.Bt = data.slice$FGM.Bt, Priority = data.slice$Priority, Selected = data.slice$Selected, Orbit=data.slice$Orbit)
+  r.data$Bt_Mixture <- get_data("Bt_Mixture", "sd")
+  r.data$Bt_Mixture <- get_data("Bt_Mixture", "mean")
+  r.data$DIS.N <- log(data.slice$DIS.N)
+  r.data$N_Mixture <- get_data("N_Mixture", "sd")
+  r.data$N_Mixture <- get_data("N_Mixture", "mean")
+  r.data$DIS.T <- log((data.slice$DIS.T_para + 2 * data.slice$DIS.T_perp) / 3)
+  r.data$T_Mixture <- get_data("T_Mixture", "sd")
+  r.data$T_Mixture <- get_data("T_Mixture", "mean")
+  r.data$Clock.Angle <- atan2(data.slice$FGM.By, data.slice$FGM.Bz);
+  r.data$Clock_Mixture <- get_data("Clock_Mixture", "sd")
+  r.data$Clock_Mixture <- get_data("Clock_Mixture", "mean")
+  r.data$Pred_Priority <- get_data("Priority", "sd")
+  r.data$Pred_Priority <- get_data("Priority", "mean")
+  
+  return(r.data)
+}
+
+# Generate data for plots
+fit.data <- plot_data(data.slice, fit.samples)
+```
+```{r custom_plot_function}
+# Customize types plot
+mms_types_plot_pos <- function(data){
+  subsets <- list(c("FGM.Bt"), c("DIS.N", "DIS.T"), c("Clock.Angle"),
+                  c("Bt_Position", "N_Position", "T_Position", "C_Position"),
+                  c("Avg_Pos"),
+                  c("Position"),
+                  c("Bt_Mixture", "N_Mixture", "T_Mixture", "Clock_Mixture"),
+                  c("Avg_Mix"),
+                  c("Mixture"),
+                  c("Priority", "Pred_Priority")
+                  )
+  titles <- c("FGM.Bt", "DIS", "Clock Angle",
+              "Positions", "Average Position", "Position",
+              "Mixtures", "Average Mix", "Mixture", "Priority"
+              )
+  plotTitle = "Features Grouped by Type over Time with MP points Highlighted"
+  
+  return(types_plot(data, subsets, titles, plotTitle))
+}
+```
+```{r plot_samples}
+fit.data$Highlight.Actual <- ifelse(fit.data$Priority >= 100, TRUE, FALSE)
+fit.data$Highlight.Predicted <- ifelse(fit.data$Pred_Priority >= 60, TRUE, FALSE)
+mms_types_plot_pos(fit.data[fit.data$Orbit==33,])
+```
+```{r}
+evaluate <- function(data){
+  prediction <- data$predicted
+  actual <- data$actual
+  total = length(actual)
+  actual_sum <- sum(actual)
+  pred_sum <- sum(prediction)
+  TP <- sum(ifelse(prediction & actual, 1, 0))
+  TN <- sum(ifelse(!prediction & !actual, 1, 0))
+  FN <- sum(ifelse(!prediction & actual, 1, 0))
+  FP <- sum(ifelse(prediction & !actual, 1, 0))
+  
+  c("TP" = TP, "TN" = TN, "FP" = FP, "FN" = FN, 
+    "actuals" = actual_sum, "predicted" = pred_sum,
+    "accuracy" = (TP+TN)/total, "missclassification" = (FP+FN)/total,
+    "precision" = TP/(TP+FP), "prevalence" = TP/total,
+    "true.positive.rate" = TP/(TP+FN), "false.positive.rate" = FP/(FP+TN), 
+    "true.negative.rate" = TN/(FP+TN))
+}
+eval.method(fit.data$Highlight.Actual, fit.data$Highlight.Predicted, 0.5)
+evaluate_data_asFrame(fit.data, fit.data$Highlight.Predicted)
+evaluate(data.frame(actual = fit.data$Highlight.Actual, predicted = fit.data$Highlight.Predicted))
+```
+```{r}
+eval.method2 <- function(target, prediction, threshold){
+  t.seg = segments(target)
+  p.seg = segments(prediction)
+  
+  t.count.t = 0
+  t.count.f = 0
+  p.count.t = 0
+  p.count.f = 0
+  
+  # target overlap count
+  for(s in 1:dim(t.seg)[1]){
+    # selected = TRUE overlap
+    t.sum.t = sum(target[t.seg[s,1]:t.seg[s,2]], na.rm = TRUE)
+    p.sum.t = sum(prediction[t.seg[s,1]:t.seg[s,2]], na.rm = TRUE)
+    # selected - FALSE overlap
+    t.sum.f = length(target) - t.sum.t
+    p.sum.f = length(prediction) - p.sum.t
+    if((p.sum.t / t.sum.t) > threshold) t.count.t = t.count.t + 1
+    else if((p.sum.f / t.sum.f) > threshold) t.count.f = t.count.f + 1
+  }
+  
+  # prediction overlap
+  for(s in 1:dim(p.seg)[1]){
+    # selected = TRUE overlap
+    t.sum.t = sum(target[p.seg[s,1]:p.seg[s,2]], na.rm = TRUE)
+    p.sum.t = sum(prediction[p.seg[s,1]:p.seg[s,2]], na.rm = TRUE)
+    # selected - FALSE overlap
+    t.sum.f = length(target) - t.sum.t
+    p.sum.f = length(prediction) - p.sum.t
+    if((t.sum.t / p.sum.t) > threshold) p.count.t = p.count.t + 1
+    else if((t.sum.f / p.sum.f) > threshold) p.count.f = p.count.f + 1
+  }
+  
+  c(Target_Ratio_Selected = t.count.t / dim(t.seg)[1], Target_Ratio_Unselected = t.count.f / dim(t.seg)[1], Prediction_Ratio_Selected = p.count.t / dim(p.seg)[1], Prediction_Ratio_Unselected = p.count.f / dim(p.seg)[1])
+}
+eval.method2(fit.data$Highlight.Actual, fit.data$Highlight.Predicted, 0.5)
+```
