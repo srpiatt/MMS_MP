@@ -1,5 +1,5 @@
 # GetDataFunctions
-# Authors: Daroc Alden, Jeremy Walker, & Samantha Piatt
+# Authors: Samantha Piatt, Marek Petrik, Daroc Alden, Jeremy Walker
 
 # ------------------------------------------------- Open, Save, and Process Data
 # Create data frame from mms and sitl data.
@@ -113,7 +113,7 @@ open_data <- function(source, destination){
   if(!file.exists(destination)){
     # load and pre-process the data
     data <- readr::read_csv(source)
-    data <- mutate(data, Orbit=cumsum(fix.na(data$Time - lag(data$Time),4) > 100))
+    data <- dplyr::mutate(data, Orbit=cumsum(fix.na(data$Time - lag(data$Time),4) > 100))
     saveRDS(data, destination)
   } else {
     data <- readRDS(destination)
@@ -129,7 +129,7 @@ load_orbit <- function(source, destination, orbit){
   dest = paste(orbit, destination, sep='')
   if(!file.exists(dest)){
     data <- open_data(source, destination)
-    data <- data %>% mutate(DES.N=pmax(DES.N,0.001), Orbit=as.factor(Orbit)) %>% filter(Orbit == orbit)
+    data <- data %>% dplyr::mutate(DES.N=pmax(DES.N,0.001), Orbit=as.factor(Orbit)) %>% filter(Orbit == orbit)
     saveRDS(data, dest)
   } else {
     data <- readRDS(dest)
